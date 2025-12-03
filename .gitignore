@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# データファイル（機密情報の可能性があるため）
+data.csv
+*.csv
+
+# 生成されるファイル
+metrics.txt
+confusion_matrix.png
+feature_importance.png
+report.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+

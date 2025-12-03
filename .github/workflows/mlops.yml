@@ -1,0 +1,61 @@
+name: Attrition Prediction Workflow
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  run-ml-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Execute & Check (Train Model)
+        run: |
+          python train.py
+
+      - name: Feedback (Write Report to PR)
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # レポートのMarkdownを作成
+          echo "## 📊 離職率予測モデル レポート" > report.md
+          echo "" >> report.md
+          echo "### モデル精度メトリクス" >> report.md
+          echo "\`\`\`" >> report.md
+          cat metrics.txt >> report.md
+          echo "\`\`\`" >> report.md
+          echo "" >> report.md
+          
+          echo "### 混同行列 (Confusion Matrix)" >> report.md
+          echo "![Confusion Matrix](./confusion_matrix.png)" >> report.md
+          echo "" >> report.md
+          
+          echo "### 特徴量重要度 (Top 10)" >> report.md
+          echo "![Feature Importance](./feature_importance.png)" >> report.md
+          echo "" >> report.md
+          
+          echo "### データについて" >> report.md
+          echo "- 使用データ: data.csv" >> report.md
+          echo "- モデル: RandomForestClassifier" >> report.md
+          echo "" >> report.md
+          
+          echo "---" >> report.md
+          echo "*このレポートは自動生成されました*" >> report.md
+          
+          # PRにコメントを送信 (CML機能)
+          cml comment create report.md --publish confusion_matrix.png feature_importance.png
+
