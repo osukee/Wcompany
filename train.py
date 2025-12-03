@@ -51,7 +51,20 @@ else:
 
 # 4. 実行 (Execute): モデル学習
 # ※計画(Plan)段階でここのパラメータをいじってPushすることを想定
-model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+# 精度向上のための改善:
+# - n_estimatorsを200に増加（より多くの決定木で精度向上）
+# - max_depthを15に増加（より深い木で複雑なパターンを学習）
+# - class_weight='balanced'を追加（不均衡データに対応）
+# - min_samples_splitを5に設定（過学習を防ぐ）
+model = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=15,
+    min_samples_split=5,
+    min_samples_leaf=2,
+    class_weight='balanced',  # 不均衡データに対応
+    random_state=42,
+    n_jobs=-1  # 並列処理で高速化
+)
 model.fit(X_train, y_train)
 
 # 5. 評価 (Check): 予測とスコア算出
