@@ -1,114 +1,169 @@
+"""
+離職率予測モデル - メイン学習スクリプト
+精度向上のための改善を実装
+"""
+
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
-import os
+import numpy as np
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+import config
+import preprocessing as prep
+import models
+import evaluation as eval_module
 
-# 1. データの読み込み
-df = pd.read_csv('data.csv')
+# SMOTE用（オプション）
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    print("SMOTE is not available. Install with: pip install imbalanced-learn")
 
-# 2. 前処理
-# 不要そうなカラムの削除（IDや定数など）
-drop_cols = ['EmployeeCount', 'EmployeeNumber', 'Over18', 'StandardHours']
-df = df.drop(columns=drop_cols, errors='ignore')
-
-# ターゲット変数のエンコーディング (Attrition: Yes=1, No=0)
-df['Attrition'] = df['Attrition'].map({'Yes': 1, 'No': 0})
-
-# カテゴリ変数のエンコーディング
-cat_cols = df.select_dtypes(include=['object']).columns
-label_encoders = {}
-for col in cat_cols:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col])
-    label_encoders[col] = le
-
-# 特徴量とターゲットに分離
-X = df.drop('Attrition', axis=1)
-y = df['Attrition']
-
-# 3. データ分割（Yearカラムがある場合は時系列分割、ない場合はランダム分割）
-if 'Year' in df.columns:
-    # Yearカラムがある場合：2023年で学習、2024年でテスト
-    train_mask = df['Year'] == 2023
-    test_mask = df['Year'] == 2024
+def apply_smote(X_train, y_train):
+    """SMOTEを適用して不均衡データを補正"""
+    if not SMOTE_AVAILABLE:
+        print("SMOTE is not available. Using class_weight instead.")
+        return X_train, y_train
     
-    X_train = X[train_mask]
-    X_test = X[test_mask]
-    y_train = y[train_mask]
-    y_test = y[test_mask]
+    if not config.USE_SMOTE:
+        return X_train, y_train
     
-    print(f"Training data: {len(X_train)} samples (Year 2023)")
-    print(f"Test data: {len(X_test)} samples (Year 2024)")
-else:
-    # Yearカラムがない場合：ランダム分割
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    print(f"Training data: {len(X_train)} samples")
-    print(f"Test data: {len(X_test)} samples")
+    print("SMOTEを適用中...")
+    smote = SMOTE(sampling_strategy=config.SMOTE_RATIO, random_state=config.RANDOM_STATE)
+    X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+    
+    print(f"SMOTE適用前: {len(X_train)} samples")
+    print(f"SMOTE適用後: {len(X_train_resampled)} samples")
+    print(f"  クラス分布: {pd.Series(y_train_resampled).value_counts().to_dict()}")
+    
+    return X_train_resampled, y_train_resampled
 
-# 4. 実行 (Execute): モデル学習
-# ※計画(Plan)段階でここのパラメータをいじってPushすることを想定
-# 精度向上のための改善:
-# - n_estimatorsを200に増加（より多くの決定木で精度向上）
-# - max_depthを15に増加（より深い木で複雑なパターンを学習）
-# - class_weight='balanced'を追加（不均衡データに対応）
-# - min_samples_splitを5に設定（過学習を防ぐ）
-model = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=15,
-    min_samples_split=5,
-    min_samples_leaf=2,
-    class_weight='balanced',  # 不均衡データに対応
-    random_state=42,
-    n_jobs=-1  # 並列処理で高速化
-)
-model.fit(X_train, y_train)
 
-# 5. 評価 (Check): 予測とスコア算出
-y_pred = model.predict(X_test)
-acc = accuracy_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred)
+def train_model(X_train, y_train, model_name='random_forest', use_grid_search=False):
+    """モデルを学習"""
+    print(f"\n{'='*60}")
+    print(f"モデル学習: {model_name}")
+    print(f"{'='*60}")
+    
+    # クラス重みの計算（XGBoost用）
+    if model_name in ['xgboost', 'xgb']:
+        class_weights = models.calculate_class_weight(y_train)
+        scale_pos_weight = class_weights[1] / class_weights[0] if 0 in class_weights and 1 in class_weights else 1
+        model = models.get_model(model_name, scale_pos_weight=scale_pos_weight)
+    else:
+        model = models.get_model(model_name)
+    
+    # ハイパーパラメータチューニング
+    if use_grid_search and model_name == 'random_forest':
+        print("グリッドサーチを実行中...")
+        model = models.tune_random_forest(
+            X_train, y_train,
+            cv=config.GRID_SEARCH_CV,
+            scoring=config.GRID_SEARCH_SCORING
+        )
+    else:
+        # 通常の学習
+        print("モデルを学習中...")
+        model.fit(X_train, y_train)
+    
+    return model
 
-# 詳細な分類レポート
-report = classification_report(y_test, y_pred, output_dict=True)
+def cross_validate_model(model, X_train, y_train):
+    """クロスバリデーションを実行"""
+    if not config.USE_CROSS_VALIDATION:
+        return None
+    
+    print(f"\n{'='*60}")
+    print("クロスバリデーション実行中...")
+    print(f"{'='*60}")
+    
+    cv_scores = {}
+    skf = StratifiedKFold(n_splits=config.CV_FOLDS, shuffle=True, random_state=config.RANDOM_STATE)
+    
+    for metric in config.CV_SCORING:
+        try:
+            scores = cross_val_score(model, X_train, y_train, cv=skf, scoring=metric, n_jobs=-1)
+            cv_scores[metric] = {
+                'mean': scores.mean(),
+                'std': scores.std(),
+                'scores': scores.tolist()
+            }
+            print(f"{metric}: {scores.mean():.4f} (+/- {scores.std() * 2:.4f})")
+        except Exception as e:
+            print(f"{metric}の計算に失敗: {e}")
+    
+    return cv_scores
 
-# 6. フィードバック用レポートの作成
-# メトリクスの書き出し
-with open("metrics.txt", "w") as outfile:
-    outfile.write(f"Accuracy: {acc:.4f}\n")
-    outfile.write(f"F1 Score: {f1:.4f}\n")
-    outfile.write(f"Precision: {report['1']['precision']:.4f}\n")
-    outfile.write(f"Recall: {report['1']['recall']:.4f}\n")
+def main():
+    """メイン処理"""
+    print("="*60)
+    print("離職率予測モデル - 学習開始")
+    print("="*60)
+    
+    # 1. データの読み込み
+    print("\n1. データの読み込み...")
+    df = prep.load_data()
+    print(f"   データ形状: {df.shape}")
+    
+    # 2. 前処理
+    print("\n2. 前処理を実行中...")
+    if config.YEAR_COL in df.columns:
+        # Yearカラムがある場合: 時系列分割
+        # まず前処理を学習データでfit
+        df_train_raw = df[df[config.YEAR_COL] == config.TRAIN_YEAR].copy()
+        df_test_raw = df[df[config.YEAR_COL] == config.TEST_YEAR].copy()
+        
+        X_train, y_train, fit_encoders = prep.preprocess_data(df_train_raw, is_train=True)
+        X_test, y_test, _ = prep.preprocess_data(df_test_raw, fit_encoders=fit_encoders, is_train=False)
+    else:
+        # Yearカラムがない場合: ランダム分割
+        X, y, fit_encoders = prep.preprocess_data(df, is_train=True)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=config.TEST_SIZE, random_state=config.RANDOM_STATE, stratify=y
+        )
+    
+    print(f"   学習データ: {X_train.shape}")
+    print(f"   テストデータ: {X_test.shape}")
+    print(f"   特徴量数: {X_train.shape[1]}")
+    
+    # 3. SMOTEの適用（オプション）
+    if config.USE_SMOTE:
+        X_train, y_train = apply_smote(X_train, y_train)
+    
+    # 4. モデルの学習
+    model_name = 'random_forest'  # デフォルトモデル
+    use_grid_search = config.USE_GRID_SEARCH
+    
+    model = train_model(X_train, y_train, model_name=model_name, use_grid_search=use_grid_search)
+    
+    # 5. クロスバリデーション（オプション）
+    cv_scores = cross_validate_model(model, X_train, y_train)
+    
+    # 6. 評価
+    print(f"\n{'='*60}")
+    print("モデル評価")
+    print(f"{'='*60}")
+    
+    feature_names = X_train.columns.tolist() if hasattr(X_train, 'columns') else None
+    metrics, y_pred, y_pred_proba = eval_module.evaluate_model(
+        model, X_test, y_test, feature_names=feature_names, save_plots=config.SAVE_PLOTS
+    )
+    
+    # 7. 結果の表示
+    print(f"\n{'='*60}")
+    print("最終結果")
+    print(f"{'='*60}")
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            print(f"{key}: {value:.4f}")
+        else:
+            print(f"{key}: {value}")
+    
+    print(f"\n{'='*60}")
+    print("学習完了")
+    print(f"{'='*60}")
+    
+    return model, metrics, cv_scores
 
-# 混同行列のグラフ作成
-cm = confusion_matrix(y_test, y_pred)
-plt.figure(figsize=(8, 6))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
-plt.xlabel('Predicted')
-plt.ylabel('Actual')
-plt.title('Confusion Matrix')
-plt.tight_layout()
-plt.savefig('confusion_matrix.png', dpi=150, bbox_inches='tight')
-plt.close()
-
-# 特徴量重要度の可視化（上位10個）
-feature_importance = pd.DataFrame({
-    'feature': X.columns,
-    'importance': model.feature_importances_
-}).sort_values('importance', ascending=False).head(10)
-
-plt.figure(figsize=(10, 6))
-sns.barplot(data=feature_importance, x='importance', y='feature')
-plt.title('Top 10 Feature Importance')
-plt.xlabel('Importance')
-plt.tight_layout()
-plt.savefig('feature_importance.png', dpi=150, bbox_inches='tight')
-plt.close()
-
-print("Training and Evaluation Completed.")
-print(f"Accuracy: {acc:.4f}")
-print(f"F1 Score: {f1:.4f}")
-
+if __name__ == '__main__':
+    model, metrics, cv_scores = main()
