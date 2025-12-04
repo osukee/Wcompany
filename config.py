@@ -24,7 +24,7 @@ CORRELATION_THRESHOLD = 0.95  # この値以上の相関がある特徴量ペア
 FEATURE_IMPORTANCE_THRESHOLD = 0.001  # この値以下の重要度の特徴量を削除
 
 # 不均衡データ対応
-USE_SMOTE = False  # True: SMOTEを使用, False: class_weightを使用
+USE_SMOTE = True  # True: SMOTEを使用, False: class_weightを使用
 SMOTE_RATIO = 0.5  # 少数クラスのサンプル数を多数クラスの何倍にするか
 
 # データ分割設定
