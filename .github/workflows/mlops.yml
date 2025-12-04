@@ -17,7 +17,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
@@ -26,6 +26,9 @@ jobs:
       - name: Execute & Check (Train Model)
         run: |
           python train.py
+
+      - name: Setup CML
+        uses: iterative/setup-cml@v2
 
       - name: Feedback (Write Report to PR)
         env:
@@ -57,7 +60,5 @@ jobs:
           echo "*このレポートは自動生成されました*" >> report.md
           
           # PRにコメントを送信 (CML機能)
-          # CML_REPO_TOKEN環境変数を設定（CMLが自動でREPO_TOKENを認識する場合もある）
-          export CML_REPO_TOKEN=${{ secrets.GITHUB_TOKEN }}
           cml comment create report.md --publish confusion_matrix.png feature_importance.png
 
