@@ -10,8 +10,9 @@ ENV/
 .venv
 
 # データファイル（機密情報の可能性があるため）
-data.csv
+# data.csv はリポジトリに含める（GitHub Actionsで使用するため）
 *.csv
+!data.csv
 
 # 生成されるファイル
 metrics.txt
