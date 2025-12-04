@@ -60,5 +60,6 @@ jobs:
           echo "*このレポートは自動生成されました*" >> report.md
           
           # PRにコメントを送信 (CML機能)
-          cml comment create report.md --publish confusion_matrix.png feature_importance.png
+          # --publishオプションでMarkdown内の画像参照を自動的にアップロード
+          cml comment create report.md --publish
 
