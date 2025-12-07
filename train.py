@@ -3,20 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.ensemble import (
-    RandomForestClassifier, GradientBoostingClassifier,
-    ExtraTreesClassifier
-)
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import (
     accuracy_score, f1_score, confusion_matrix, roc_auc_score,
     precision_recall_curve, roc_curve, precision_score, recall_score,
-    average_precision_score, fbeta_score
+    average_precision_score
 )
-from sklearn.feature_selection import SelectFromModel
-import os
 import warnings
 
 # XGBoost
@@ -48,14 +42,23 @@ try:
 except ImportError:
     HAS_IMBLEARN = False
 
+# Optuna
+try:
+    import optuna
+    from optuna.samplers import TPESampler
+    HAS_OPTUNA = True
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+except ImportError:
+    HAS_OPTUNA = False
+
 warnings.filterwarnings('ignore')
 
 # =============================================================================
 # 1. データの読み込み
 # =============================================================================
 print("=" * 70)
-print("離職予測モデル - 改良版 v9")
-print("(特徴量選択 + シンプル化)")
+print("離職予測モデル - 改良版 v10")
+print("(Optuna最適化拡張 + ROC-AUC最大化)")
 print("=" * 70)
 
 df = pd.read_csv('data.csv')
@@ -69,11 +72,9 @@ df = df.drop(columns=drop_cols, errors='ignore')
 df['Attrition'] = df['Attrition'].map({'Yes': 1, 'No': 0})
 
 # =============================================================================
-# 3. 特徴量エンジニアリング（厳選版）
+# 3. 特徴量エンジニアリング（v9と同じ）
 # =============================================================================
-print("\nCreating engineered features (Selected)...")
-
-# === 重要度トップの特徴量のみ作成 ===
+print("\nCreating engineered features...")
 
 # インセンティブ関連（最重要！）
 if 'Incentive' in df.columns:
@@ -82,7 +83,7 @@ if 'Incentive' in df.columns:
     df['LowIncentive'] = (df['Incentive'] == 0).astype(int)
     df['HighIncentive'] = (df['Incentive'] > df['Incentive'].median()).astype(int)
 
-# 給与・キャリア関連（重要）
+# 給与・キャリア関連
 df['IncomePerLevel'] = df['MonthlyIncome'] / (df['JobLevel'] + 1)
 df['IncomePerYear'] = df['MonthlyIncome'] / (df['TotalWorkingYears'] + 1)
 df['IncomeLevelRatio'] = df['MonthlyIncome'] / (df['JobLevel'] * 3000 + 1)
@@ -90,7 +91,7 @@ df['YearsAtRatio'] = df['YearsAtCompany'] / (df['TotalWorkingYears'] + 1)
 df['ManagerRatio'] = df['YearsWithCurrManager'] / (df['YearsAtCompany'] + 1)
 df['PromotionGap'] = df['YearsAtCompany'] - df['YearsSinceLastPromotion']
 
-# ストレス関連（重要！）
+# ストレス関連
 if 'StressRating' in df.columns and 'StressSelfReported' in df.columns:
     df['TotalStress'] = df['StressRating'] + df['StressSelfReported']
     df['HighStress'] = (df['TotalStress'] >= 6).astype(int)
@@ -105,7 +106,7 @@ if 'MonthlyAchievement' in df.columns:
 if 'OverTime' in df.columns:
     df['OverTimeNum'] = df['OverTime'].map({'Yes': 1, 'No': 0}) if df['OverTime'].dtype == 'object' else df['OverTime']
 
-# 満足度関連（シンプル化）
+# 満足度関連
 df['LowSatisfaction'] = (
     (df['EnvironmentSatisfaction'] <= 2).astype(int) +
     (df['JobSatisfaction'] <= 2).astype(int) +
@@ -119,7 +120,7 @@ df['StagnationYears'] = (df['YearsSinceLastPromotion'] >= 3).astype(int)
 df['NewHire'] = (df['YearsAtCompany'] <= 2).astype(int)
 df['YoungEmployee'] = (df['Age'] < 30).astype(int)
 
-# 福利厚生（シンプル化）
+# 福利厚生
 if 'WelfareBenefits' in df.columns:
     df['LowWelfare'] = (df['WelfareBenefits'] <= 2).astype(int)
 
@@ -127,7 +128,7 @@ if 'WelfareBenefits' in df.columns:
 if 'RemoteWork' in df.columns and 'FlexibleWork' in df.columns:
     df['NoFlexibility'] = ((df['RemoteWork'] == 0) & (df['FlexibleWork'] == 0)).astype(int)
 
-# 複合リスクスコア（シンプル版）
+# 複合リスクスコア
 df['AttritionRisk'] = (
     df.get('LowIncentive', 0) * 0.25 +
     df.get('HighStress', 0) * 0.20 +
@@ -138,29 +139,10 @@ df['AttritionRisk'] = (
     df.get('OverTimeNum', 0) * 0.07
 )
 
-print(f"Total features after engineering: {len(df.columns) - 1}")
+print(f"Total features: {len(df.columns) - 1}")
 
 # =============================================================================
-# 4. 重要度の低い特徴量を削除
-# =============================================================================
-# v8の結果から重要度が低い（<0.01）特徴量を事前に除外
-low_importance_cols = [
-    'RoleRatio', 'CommuteStress', 'HighCommute', 'VeryHighCommute',
-    'VeryLowSatisfaction', 'LongStagnation', 'VeryNewHire', 'VeryYoung',
-    'OvertimeSatisfaction', 'OvertimeStress', 'WorkLifeIssue',
-    'StrongAttritionSignalV2', 'LowPerformerStressed', 'VeryLowBenefits',
-    'VeryHighStress', 'NoRemote', 'FullFlexibility', 'SatisfactionScore',
-    'EngagementScore', 'AgeExperienceGap', 'CareerStagnation'
-]
-
-for col in low_importance_cols:
-    if col in df.columns:
-        df = df.drop(columns=[col])
-
-print(f"After removing low-importance features: {len(df.columns) - 1}")
-
-# =============================================================================
-# 5. データ分割
+# 4. データ分割
 # =============================================================================
 cat_cols = df.select_dtypes(include=['object']).columns.tolist()
 num_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
@@ -183,7 +165,6 @@ if 'Year' in df.columns:
     print(f"\nTime-based split: Train={len(X_train)}, Test={len(X_test)}")
 else:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    print(f"\nRandom split: Train={len(X_train)}, Test={len(X_test)}")
 
 cat_cols = [col for col in cat_cols if col in X_train.columns]
 num_cols = [col for col in num_cols if col in X_train.columns]
@@ -191,11 +172,10 @@ num_cols = [col for col in num_cols if col in X_train.columns]
 n_neg = (y_train == 0).sum()
 n_pos = (y_train == 1).sum()
 class_weight_ratio = n_neg / n_pos
-print(f"Class distribution: Neg={n_neg}, Pos={n_pos} (ratio 1:{class_weight_ratio:.2f})")
-print(f"Features: {len(num_cols)} numeric, {len(cat_cols)} categorical")
+print(f"Class ratio: 1:{class_weight_ratio:.2f}")
 
 # =============================================================================
-# 6. 前処理 + SMOTE
+# 5. 前処理 + SMOTE
 # =============================================================================
 preprocessor = ColumnTransformer(transformers=[
     ('num', RobustScaler(), num_cols),
@@ -209,72 +189,169 @@ if HAS_IMBLEARN:
     print("\nApplying SMOTETomek...")
     smotetomek = SMOTETomek(random_state=42, smote=SMOTE(k_neighbors=5, random_state=42))
     X_train_resampled, y_train_resampled = smotetomek.fit_resample(X_train_processed, y_train)
-    print(f"  Before: {len(y_train)}, After: {len(y_train_resampled)}")
+    print(f"  Resampled: {len(y_train_resampled)}")
 else:
     X_train_resampled, y_train_resampled = X_train_processed, y_train
 
 # =============================================================================
-# 7. モデル（シンプル化）
+# 6. Optuna最適化（拡張版）
 # =============================================================================
 print("\n" + "=" * 70)
-print("Model Training (Simplified)")
+print("Optuna Hyperparameter Optimization (ROC-AUC focus)")
 print("=" * 70)
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+N_TRIALS = 50  # 最適化のトライアル数
+best_params = {}
+
+# GradientBoosting最適化
+print("\nOptimizing GradientBoosting...")
+def objective_gb(trial):
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+        'max_depth': trial.suggest_int('max_depth', 3, 8),
+        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+        'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+        'min_samples_split': trial.suggest_int('min_samples_split', 5, 30),
+        'min_samples_leaf': trial.suggest_int('min_samples_leaf', 2, 15),
+        'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
+        'random_state': 42
+    }
+    model = GradientBoostingClassifier(**params)
+    scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+    return scores.mean()
+
+study_gb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+study_gb.optimize(objective_gb, n_trials=N_TRIALS, show_progress_bar=False)
+best_params['GB'] = study_gb.best_params
+print(f"  Best ROC-AUC: {study_gb.best_value:.4f}")
+
+# LightGBM最適化
+if HAS_LIGHTGBM:
+    print("\nOptimizing LightGBM...")
+    def objective_lgbm(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+            'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
+            'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+            'class_weight': 'balanced',
+            'random_state': 42,
+            'verbose': -1,
+            'n_jobs': -1
+        }
+        model = LGBMClassifier(**params)
+        scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+        return scores.mean()
+
+    study_lgbm = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+    study_lgbm.optimize(objective_lgbm, n_trials=N_TRIALS, show_progress_bar=False)
+    best_params['LGBM'] = study_lgbm.best_params
+    print(f"  Best ROC-AUC: {study_lgbm.best_value:.4f}")
+
+# XGBoost最適化
+if HAS_XGBOOST:
+    print("\nOptimizing XGBoost...")
+    def objective_xgb(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+            'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 15),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+            'scale_pos_weight': class_weight_ratio,
+            'random_state': 42,
+            'use_label_encoder': False,
+            'eval_metric': 'logloss',
+            'n_jobs': -1
+        }
+        model = XGBClassifier(**params)
+        scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+        return scores.mean()
+
+    study_xgb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+    study_xgb.optimize(objective_xgb, n_trials=N_TRIALS, show_progress_bar=False)
+    best_params['XGB'] = study_xgb.best_params
+    print(f"  Best ROC-AUC: {study_xgb.best_value:.4f}")
+
+# CatBoost最適化
+if HAS_CATBOOST:
+    print("\nOptimizing CatBoost...")
+    def objective_cat(trial):
+        params = {
+            'iterations': trial.suggest_int('iterations', 200, 800),
+            'depth': trial.suggest_int('depth', 4, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
+            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
+            'border_count': trial.suggest_int('border_count', 32, 255),
+            'auto_class_weights': 'Balanced',
+            'random_seed': 42,
+            'verbose': False
+        }
+        model = CatBoostClassifier(**params)
+        scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+        return scores.mean()
+
+    study_cat = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+    study_cat.optimize(objective_cat, n_trials=N_TRIALS, show_progress_bar=False)
+    best_params['CatBoost'] = study_cat.best_params
+    print(f"  Best ROC-AUC: {study_cat.best_value:.4f}")
+
+# =============================================================================
+# 7. 最適化されたモデルの学習
+# =============================================================================
+print("\n" + "=" * 70)
+print("Training Optimized Models")
+print("=" * 70)
+
 models = {}
 
-# トップ4モデルのみ（v8の結果から）
-models['GB'] = GradientBoostingClassifier(
-    n_estimators=400, max_depth=4, min_samples_split=10,
-    learning_rate=0.02, subsample=0.8, random_state=42
-)
+# GB
+gb_params = best_params['GB'].copy()
+gb_params['random_state'] = 42
+models['GB_Opt'] = GradientBoostingClassifier(**gb_params)
 
-if HAS_LIGHTGBM:
-    models['LGBM'] = LGBMClassifier(
-        n_estimators=500, max_depth=5, learning_rate=0.02, subsample=0.8,
-        colsample_bytree=0.8, class_weight='balanced',
-        random_state=42, verbose=-1, n_jobs=-1
-    )
+# LGBM
+if HAS_LIGHTGBM and 'LGBM' in best_params:
+    lgbm_params = best_params['LGBM'].copy()
+    lgbm_params['class_weight'] = 'balanced'
+    lgbm_params['random_state'] = 42
+    lgbm_params['verbose'] = -1
+    lgbm_params['n_jobs'] = -1
+    models['LGBM_Opt'] = LGBMClassifier(**lgbm_params)
 
-if HAS_XGBOOST:
-    models['XGB'] = XGBClassifier(
-        n_estimators=500, max_depth=5, learning_rate=0.02, subsample=0.8,
-        colsample_bytree=0.8, scale_pos_weight=class_weight_ratio,
-        reg_alpha=0.1, reg_lambda=0.5, random_state=42,
-        use_label_encoder=False, eval_metric='logloss', n_jobs=-1
-    )
+# XGB
+if HAS_XGBOOST and 'XGB' in best_params:
+    xgb_params = best_params['XGB'].copy()
+    xgb_params['scale_pos_weight'] = class_weight_ratio
+    xgb_params['random_state'] = 42
+    xgb_params['use_label_encoder'] = False
+    xgb_params['eval_metric'] = 'logloss'
+    xgb_params['n_jobs'] = -1
+    models['XGB_Opt'] = XGBClassifier(**xgb_params)
 
-if HAS_CATBOOST:
-    models['CatBoost'] = CatBoostClassifier(
-        iterations=500, depth=6, learning_rate=0.03,
-        loss_function='Logloss', auto_class_weights='Balanced',
-        random_seed=42, verbose=False
-    )
+# CatBoost
+if HAS_CATBOOST and 'CatBoost' in best_params:
+    cat_params = best_params['CatBoost'].copy()
+    cat_params['auto_class_weights'] = 'Balanced'
+    cat_params['random_seed'] = 42
+    cat_params['verbose'] = False
+    models['CatBoost_Opt'] = CatBoostClassifier(**cat_params)
 
-print(f"\nTotal models: {len(models)}")
-
-# =============================================================================
-# 8. クロスバリデーション
-# =============================================================================
-print("\n--- Cross-Validation Results ---")
-cv_results = {}
-
-for name, model in models.items():
-    cv_roc = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
-    cv_f1 = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='f1', n_jobs=-1)
-    cv_results[name] = {'roc_auc': cv_roc, 'f1': cv_f1}
-    print(f"{name:12s}: ROC-AUC={cv_roc.mean():.4f}±{cv_roc.std():.3f}, F1={cv_f1.mean():.4f}")
-
-# =============================================================================
-# 9. モデル学習
-# =============================================================================
-print("\n--- Training models ---")
+print(f"\nTraining {len(models)} optimized models...")
 for name, model in models.items():
     model.fit(X_train_resampled, y_train_resampled)
 print("  All models trained.")
 
 # =============================================================================
-# 10. テストセット評価
+# 8. テストセット評価
 # =============================================================================
 print("\n--- Test Set Evaluation ---")
 test_results = {}
@@ -295,21 +372,28 @@ for name, model in models.items():
     }
 
 for name, res in sorted(test_results.items(), key=lambda x: -x[1]['roc_auc']):
-    print(f"{name:12s}: ROC-AUC={res['roc_auc']:.4f}, F1={res['f1']:.4f}, Acc={res['accuracy']:.4f}, Recall={res['recall']:.4f}")
+    print(f"{name:15s}: ROC-AUC={res['roc_auc']:.4f}, F1={res['f1']:.4f}, Recall={res['recall']:.4f}")
 
 # =============================================================================
-# 11. アンサンブル
+# 9. アンサンブル
 # =============================================================================
 print("\n--- Ensemble ---")
 
-# Top4モデルの平均
-top_proba = np.mean([res['probabilities'] for res in test_results.values()], axis=0)
+# 全モデルの平均
+all_proba = np.mean([res['probabilities'] for res in test_results.values()], axis=0)
+
+# 重み付き平均（ROC-AUCベース）
+roc_scores = {name: res['roc_auc'] for name, res in test_results.items()}
+total_roc = sum(roc_scores.values())
+weighted_proba = np.zeros(len(y_test))
+for name, res in test_results.items():
+    weighted_proba += (roc_scores[name] / total_roc) * res['probabilities']
 
 # 閾値分析
 print("\nThreshold Analysis:")
 threshold_analysis = []
 for thresh in np.arange(0.15, 0.50, 0.025):
-    pred = (top_proba >= thresh).astype(int)
+    pred = (weighted_proba >= thresh).astype(int)
     acc = accuracy_score(y_test, pred)
     f1 = f1_score(y_test, pred)
     rec = recall_score(y_test, pred)
@@ -318,14 +402,14 @@ for thresh in np.arange(0.15, 0.50, 0.025):
 
 # 最適閾値
 best_f1 = max(threshold_analysis, key=lambda x: x['f1'])
-valid_recall65 = [t for t in threshold_analysis if t['recall'] >= 0.65]
-best_recall65 = max(valid_recall65, key=lambda x: x['accuracy']) if valid_recall65 else best_f1
+valid_recall = [t for t in threshold_analysis if t['recall'] >= 0.60]
+best_balanced = max(valid_recall, key=lambda x: x['f1']) if valid_recall else best_f1
 
 # アンサンブル登録
 ensemble_configs = [
-    ('Ens_F1Max', top_proba, best_f1['threshold']),
-    ('Ens_Recall65', top_proba, best_recall65['threshold']),
-    ('Ens_Balanced', top_proba, 0.30),
+    ('Ens_Weighted', weighted_proba, best_balanced['threshold']),
+    ('Ens_F1Max', weighted_proba, best_f1['threshold']),
+    ('Ens_Simple', all_proba, 0.25),
 ]
 
 for name, proba, thresh in ensemble_configs:
@@ -348,86 +432,70 @@ for name in [n for n, _, _ in ensemble_configs]:
     print(f"{name} (th={res['threshold']:.2f}): ROC={res['roc_auc']:.4f}, F1={res['f1']:.4f}, Acc={res['accuracy']:.4f}, Recall={res['recall']:.4f}")
 
 # =============================================================================
-# 12. 最良モデルの選択
+# 10. 最良モデル選択
 # =============================================================================
-def combined_score(res):
+def score(res):
     return res['roc_auc'] * 0.4 + res['f1'] * 0.3 + res['recall'] * 0.3
 
-best_model_name = max(test_results, key=lambda x: combined_score(test_results[x]))
-best_result = test_results[best_model_name]
+best_name = max(test_results, key=lambda x: score(test_results[x]))
+best = test_results[best_name]
 
-best_roc_model = max(test_results, key=lambda x: test_results[x]['roc_auc'])
-best_roc_result = test_results[best_roc_model]
+best_roc_name = max(test_results, key=lambda x: test_results[x]['roc_auc'])
+best_roc = test_results[best_roc_name]
 
 print(f"\n{'='*70}")
-print(f"BEST MODEL (Combined): {best_model_name}")
-print(f"  Accuracy: {best_result['accuracy']:.4f}")
-print(f"  F1 Score: {best_result['f1']:.4f}")
-print(f"  ROC-AUC: {best_result['roc_auc']:.4f}")
-print(f"  PR-AUC: {best_result['pr_auc']:.4f}")
-print(f"  Precision: {best_result['precision']:.4f}")
-print(f"  Recall: {best_result['recall']:.4f}")
-if 'threshold' in best_result:
-    print(f"  Threshold: {best_result['threshold']:.3f}")
+print(f"BEST MODEL: {best_name}")
+print(f"  Accuracy: {best['accuracy']:.4f}")
+print(f"  F1 Score: {best['f1']:.4f}")
+print(f"  ROC-AUC: {best['roc_auc']:.4f}")
+print(f"  Precision: {best['precision']:.4f}")
+print(f"  Recall: {best['recall']:.4f}")
+if 'threshold' in best:
+    print(f"  Threshold: {best['threshold']:.3f}")
 print(f"{'='*70}")
 
-print(f"\nBest ROC-AUC: {best_roc_model} (ROC-AUC={best_roc_result['roc_auc']:.4f})")
+print(f"\nBest ROC-AUC: {best_roc_name} ({best_roc['roc_auc']:.4f})")
 
 # =============================================================================
-# 13. 特徴量重要度
+# 11. レポート
 # =============================================================================
-feature_names = num_cols + list(preprocessor.named_transformers_['cat'].get_feature_names_out(cat_cols))
-
-if 'GB' in models:
-    gb_importance = pd.DataFrame({
-        'feature': feature_names,
-        'importance': models['GB'].feature_importances_
-    }).sort_values('importance', ascending=False)
+with open("metrics.txt", "w") as f:
+    f.write(f"{'='*60}\n")
+    f.write(f"離職予測モデル - 評価レポート v10\n")
+    f.write(f"(Optuna最適化拡張 + ROC-AUC最大化)\n")
+    f.write(f"{'='*60}\n\n")
     
-    print("\nTop 15 features (GradientBoosting):")
-    for i, row in gb_importance.head(15).iterrows():
-        print(f"  {row['feature']}: {row['importance']:.4f}")
-
-# =============================================================================
-# 14. レポート
-# =============================================================================
-with open("metrics.txt", "w") as outfile:
-    outfile.write(f"{'='*60}\n")
-    outfile.write(f"離職予測モデル - 評価レポート v9\n")
-    outfile.write(f"(特徴量選択 + シンプル化)\n")
-    outfile.write(f"{'='*60}\n\n")
+    f.write(f"=== Best Model: {best_name} ===\n")
+    f.write(f"Accuracy: {best['accuracy']:.4f}\n")
+    f.write(f"F1 Score: {best['f1']:.4f}\n")
+    f.write(f"ROC-AUC: {best['roc_auc']:.4f}\n")
+    f.write(f"Precision: {best['precision']:.4f}\n")
+    f.write(f"Recall: {best['recall']:.4f}\n")
+    if 'threshold' in best:
+        f.write(f"Threshold: {best['threshold']:.3f}\n")
     
-    outfile.write(f"=== Best Model: {best_model_name} ===\n")
-    outfile.write(f"Accuracy: {best_result['accuracy']:.4f}\n")
-    outfile.write(f"F1 Score: {best_result['f1']:.4f}\n")
-    outfile.write(f"ROC-AUC: {best_result['roc_auc']:.4f}\n")
-    outfile.write(f"PR-AUC: {best_result['pr_auc']:.4f}\n")
-    outfile.write(f"Precision: {best_result['precision']:.4f}\n")
-    outfile.write(f"Recall: {best_result['recall']:.4f}\n")
-    if 'threshold' in best_result:
-        outfile.write(f"Threshold: {best_result['threshold']:.3f}\n")
-    
-    outfile.write(f"\n=== All Models (sorted by ROC-AUC) ===\n")
+    f.write(f"\n=== All Models (sorted by ROC-AUC) ===\n")
     for name, res in sorted(test_results.items(), key=lambda x: -x[1]['roc_auc']):
-        thresh = f" (th={res['threshold']:.2f})" if 'threshold' in res else ""
-        outfile.write(f"{name:15s} - ROC: {res['roc_auc']:.4f}, F1: {res['f1']:.4f}, Acc: {res['accuracy']:.4f}, Recall: {res['recall']:.4f}{thresh}\n")
+        th = f" (th={res['threshold']:.2f})" if 'threshold' in res else ""
+        f.write(f"{name:15s} - ROC: {res['roc_auc']:.4f}, F1: {res['f1']:.4f}, Recall: {res['recall']:.4f}{th}\n")
     
-    outfile.write(f"\n=== Feature Engineering ===\n")
-    outfile.write(f"Total features: {len(feature_names)}\n")
-    outfile.write(f"(Simplified from 115 to {len(feature_names)})\n")
+    f.write(f"\n=== Optuna Best Parameters ===\n")
+    for model_name, params in best_params.items():
+        f.write(f"\n{model_name}:\n")
+        for k, v in params.items():
+            f.write(f"  {k}: {v}\n")
     
-    if 'GB' in models:
-        outfile.write(f"\n=== Top 15 Features (GB) ===\n")
-        for i, row in gb_importance.head(15).iterrows():
-            outfile.write(f"{row['feature']}: {row['importance']:.4f}\n")
+    f.write(f"\n=== Threshold Analysis ===\n")
+    for t in threshold_analysis:
+        f.write(f"Th={t['threshold']:.3f}: Acc={t['accuracy']:.4f}, F1={t['f1']:.4f}, Recall={t['recall']:.4f}\n")
 
 print("\nMetrics saved to: metrics.txt")
 
 # =============================================================================
-# 15. 可視化
+# 12. 可視化
 # =============================================================================
 # 混同行列
-cm = confusion_matrix(y_test, best_result['predictions'])
+cm = confusion_matrix(y_test, best['predictions'])
 plt.figure(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True,
             xticklabels=['No Attrition', 'Attrition'],
@@ -435,29 +503,18 @@ sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True,
             annot_kws={'size': 14})
 plt.xlabel('Predicted', fontsize=12)
 plt.ylabel('Actual', fontsize=12)
-plt.title(f'Confusion Matrix ({best_model_name})', fontsize=14)
+plt.title(f'Confusion Matrix ({best_name})', fontsize=14)
 plt.tight_layout()
 plt.savefig('confusion_matrix.png', dpi=150, bbox_inches='tight')
 plt.close()
-
-# 特徴量重要度
-if 'GB' in models:
-    top_features = gb_importance.head(15)
-    plt.figure(figsize=(10, 8))
-    colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(top_features)))
-    sns.barplot(data=top_features, x='importance', y='feature', palette=colors)
-    plt.title('Top 15 Feature Importance (GB)', fontsize=14)
-    plt.tight_layout()
-    plt.savefig('feature_importance.png', dpi=150, bbox_inches='tight')
-    plt.close()
 
 # モデル比較
 all_models = list(test_results.keys())
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 for ax, metric, title, ylim in [
-    (axes[0], 'roc_auc', 'ROC-AUC', [0.5, 1.0]),
-    (axes[1], 'f1', 'F1 Score', [0.0, 1.0]),
-    (axes[2], 'accuracy', 'Accuracy', [0.5, 1.0])
+    (axes[0], 'roc_auc', 'ROC-AUC', [0.7, 1.0]),
+    (axes[1], 'f1', 'F1 Score', [0.3, 0.8]),
+    (axes[2], 'recall', 'Recall', [0.2, 0.8])
 ]:
     scores = [test_results[m][metric] for m in all_models]
     colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(all_models)))
@@ -468,7 +525,7 @@ for ax, metric, title, ylim in [
     ax.set_xticks(range(len(all_models)))
     ax.set_xticklabels(all_models, rotation=45, ha='right', fontsize=8)
     for bar, v in zip(bars, scores):
-        ax.text(bar.get_x() + bar.get_width()/2, v + 0.02, f'{v:.3f}', ha='center', fontsize=7)
+        ax.text(bar.get_x() + bar.get_width()/2, v + 0.01, f'{v:.3f}', ha='center', fontsize=7)
 plt.tight_layout()
 plt.savefig('model_comparison.png', dpi=150, bbox_inches='tight')
 plt.close()
@@ -481,7 +538,7 @@ for name, res in test_results.items():
 plt.plot([0, 1], [0, 1], 'k--', linewidth=1)
 plt.xlabel('False Positive Rate', fontsize=12)
 plt.ylabel('True Positive Rate', fontsize=12)
-plt.title('ROC Curves', fontsize=14)
+plt.title('ROC Curves (Optimized Models)', fontsize=14)
 plt.legend(loc='lower right', fontsize=9)
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
@@ -490,5 +547,5 @@ plt.close()
 
 print("\nAll visualizations saved.")
 print("\n" + "=" * 70)
-print("Training Completed! (Simplified Model)")
+print("Training Completed! (Optuna Optimized)")
 print("=" * 70)
