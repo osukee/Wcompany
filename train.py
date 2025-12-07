@@ -57,8 +57,8 @@ warnings.filterwarnings('ignore')
 # 1. データの読み込み
 # =============================================================================
 print("=" * 70)
-print("離職予測モデル - 改良版 v10")
-print("(Optuna最適化拡張 + ROC-AUC最大化)")
+print("離職予測モデル - 改良版 v11")
+print("(Optuna最適化拡張 + 交互作用特徴量)")
 print("=" * 70)
 
 df = pd.read_csv('data.csv')
@@ -138,6 +138,14 @@ df['AttritionRisk'] = (
     df.get('LowWelfare', 0) * 0.08 +
     df.get('OverTimeNum', 0) * 0.07
 )
+
+# v11: 交互作用特徴量
+df['OverTimeHighStress'] = df.get('OverTimeNum', 0) * df.get('HighStress', 0)
+df['NewHireLowIncentive'] = df['NewHire'] * df.get('LowIncentive', 0)
+df['YoungLowSatisfaction'] = df['YoungEmployee'] * df['LowSatisfaction']
+df['StagnationLowWelfare'] = df['StagnationYears'] * df.get('LowWelfare', 0)
+df['HighStressLowSatisfaction'] = df.get('HighStress', 0) * (df['LowSatisfaction'] >= 2).astype(int)
+df['NewHireNoFlexibility'] = df['NewHire'] * df.get('NoFlexibility', 0)
 
 print(f"Total features: {len(df.columns) - 1}")
 
@@ -461,8 +469,8 @@ print(f"\nBest ROC-AUC: {best_roc_name} ({best_roc['roc_auc']:.4f})")
 # =============================================================================
 with open("metrics.txt", "w") as f:
     f.write(f"{'='*60}\n")
-    f.write(f"離職予測モデル - 評価レポート v10\n")
-    f.write(f"(Optuna最適化拡張 + ROC-AUC最大化)\n")
+    f.write(f"離職予測モデル - 評価レポート v11\n")
+    f.write(f"(Optuna最適化拡張 + 交互作用特徴量)\n")
     f.write(f"{'='*60}\n\n")
     
     f.write(f"=== Best Model: {best_name} ===\n")
