@@ -148,18 +148,7 @@ df['StagnationLowWelfare'] = df['StagnationYears'] * df.get('LowWelfare', 0)
 df['HighStressLowSatisfaction'] = df.get('HighStress', 0) * (df['LowSatisfaction'] >= 2).astype(int)
 df['NewHireNoFlexibility'] = df['NewHire'] * df.get('NoFlexibility', 0)
 
-# v11: グループ統計特徴量
-if 'Department' in df.columns:
-    dept_avg_income = df.groupby('Department')['MonthlyIncome'].transform('mean')
-    df['Dept_IncomeRatio'] = df['MonthlyIncome'] / (dept_avg_income + 1)
-    dept_avg_years = df.groupby('Department')['YearsAtCompany'].transform('mean')
-    df['Dept_YearsRatio'] = df['YearsAtCompany'] / (dept_avg_years + 1)
-
-if 'JobRole' in df.columns:
-    role_avg_income = df.groupby('JobRole')['MonthlyIncome'].transform('mean')
-    df['Role_IncomeRatio'] = df['MonthlyIncome'] / (role_avg_income + 1)
-    role_avg_years = df.groupby('JobRole')['YearsAtCompany'].transform('mean')
-    df['Role_YearsRatio'] = df['YearsAtCompany'] / (role_avg_years + 1)
+# NOTE: グループ統計特徴量はデータ分割後に計算（データリーク防止）
 
 print(f"Total features: {len(df.columns) - 1}")
 
@@ -190,6 +179,26 @@ else:
 
 cat_cols = [col for col in cat_cols if col in X_train.columns]
 num_cols = [col for col in num_cols if col in X_train.columns]
+
+# v11: グループ統計特徴量（トレーニングデータのみで計算してテストに適用）
+print("\nComputing group statistics (leak-free)...")
+if 'Department' in X_train.columns:
+    dept_income_map = X_train.groupby('Department')['MonthlyIncome'].mean().to_dict()
+    dept_years_map = X_train.groupby('Department')['YearsAtCompany'].mean().to_dict()
+    X_train['Dept_IncomeRatio'] = X_train['MonthlyIncome'] / (X_train['Department'].map(dept_income_map) + 1)
+    X_train['Dept_YearsRatio'] = X_train['YearsAtCompany'] / (X_train['Department'].map(dept_years_map) + 1)
+    X_test['Dept_IncomeRatio'] = X_test['MonthlyIncome'] / (X_test['Department'].map(dept_income_map).fillna(X_train['MonthlyIncome'].mean()) + 1)
+    X_test['Dept_YearsRatio'] = X_test['YearsAtCompany'] / (X_test['Department'].map(dept_years_map).fillna(X_train['YearsAtCompany'].mean()) + 1)
+    num_cols.extend(['Dept_IncomeRatio', 'Dept_YearsRatio'])
+
+if 'JobRole' in X_train.columns:
+    role_income_map = X_train.groupby('JobRole')['MonthlyIncome'].mean().to_dict()
+    role_years_map = X_train.groupby('JobRole')['YearsAtCompany'].mean().to_dict()
+    X_train['Role_IncomeRatio'] = X_train['MonthlyIncome'] / (X_train['JobRole'].map(role_income_map) + 1)
+    X_train['Role_YearsRatio'] = X_train['YearsAtCompany'] / (X_train['JobRole'].map(role_years_map) + 1)
+    X_test['Role_IncomeRatio'] = X_test['MonthlyIncome'] / (X_test['JobRole'].map(role_income_map).fillna(X_train['MonthlyIncome'].mean()) + 1)
+    X_test['Role_YearsRatio'] = X_test['YearsAtCompany'] / (X_test['JobRole'].map(role_years_map).fillna(X_train['YearsAtCompany'].mean()) + 1)
+    num_cols.extend(['Role_IncomeRatio', 'Role_YearsRatio'])
 
 n_neg = (y_train == 0).sum()
 n_pos = (y_train == 1).sum()
