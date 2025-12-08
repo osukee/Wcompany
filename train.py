@@ -147,6 +147,19 @@ df['StagnationLowWelfare'] = df['StagnationYears'] * df.get('LowWelfare', 0)
 df['HighStressLowSatisfaction'] = df.get('HighStress', 0) * (df['LowSatisfaction'] >= 2).astype(int)
 df['NewHireNoFlexibility'] = df['NewHire'] * df.get('NoFlexibility', 0)
 
+# v11: グループ統計特徴量
+if 'Department' in df.columns:
+    dept_avg_income = df.groupby('Department')['MonthlyIncome'].transform('mean')
+    df['Dept_IncomeRatio'] = df['MonthlyIncome'] / (dept_avg_income + 1)
+    dept_avg_years = df.groupby('Department')['YearsAtCompany'].transform('mean')
+    df['Dept_YearsRatio'] = df['YearsAtCompany'] / (dept_avg_years + 1)
+
+if 'JobRole' in df.columns:
+    role_avg_income = df.groupby('JobRole')['MonthlyIncome'].transform('mean')
+    df['Role_IncomeRatio'] = df['MonthlyIncome'] / (role_avg_income + 1)
+    role_avg_years = df.groupby('JobRole')['YearsAtCompany'].transform('mean')
+    df['Role_YearsRatio'] = df['YearsAtCompany'] / (role_avg_years + 1)
+
 print(f"Total features: {len(df.columns) - 1}")
 
 # =============================================================================
