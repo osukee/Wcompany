@@ -222,7 +222,7 @@ print("Optuna Hyperparameter Optimization (ROC-AUC focus)")
 print("=" * 70)
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-N_TRIALS = 50  # 最適化のトライアル数
+N_TRIALS = 80  # v11: トライアル数増加 (50→80)
 best_params = {}
 
 # GradientBoosting最適化
