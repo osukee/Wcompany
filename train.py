@@ -2,8 +2,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, cross_val_predict
 from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import (
@@ -432,6 +433,29 @@ ensemble_configs = [
     ('Ens_F1Max', weighted_proba, best_f1['threshold']),
     ('Ens_Simple', all_proba, 0.25),
 ]
+
+# v11: スタッキングアンサンブル
+print("\nBuilding Stacking Ensemble...")
+try:
+    # 各モデルのテスト確率を特徴量としてスタック
+    stacking_features = np.column_stack([res['probabilities'] for res in test_results.values()])
+    
+    # トレーニングデータでのOOF予測を生成
+    train_stacking = []
+    for name, model in models.items():
+        oof_pred = cross_val_predict(model, X_train_resampled, y_train_resampled, cv=5, method='predict_proba')[:, 1]
+        train_stacking.append(oof_pred)
+    train_stacking_features = np.column_stack(train_stacking)
+    
+    # メタ学習器（LogisticRegression）
+    meta_model = LogisticRegression(random_state=42, max_iter=1000)
+    meta_model.fit(train_stacking_features, y_train_resampled)
+    stacking_proba = meta_model.predict_proba(stacking_features)[:, 1]
+    print(f"  Stacking ROC-AUC: {roc_auc_score(y_test, stacking_proba):.4f}")
+    
+    ensemble_configs.append(('Ens_Stacking', stacking_proba, best_balanced['threshold']))
+except Exception as e:
+    print(f"  Stacking failed: {e}")
 
 for name, proba, thresh in ensemble_configs:
     pred = (proba >= thresh).astype(int)
