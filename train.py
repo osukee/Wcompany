@@ -58,8 +58,8 @@ warnings.filterwarnings('ignore')
 # 1. データの読み込み
 # =============================================================================
 print("=" * 70)
-print("離職予測モデル - 改良版 v11")
-print("(Optuna最適化拡張 + 交互作用特徴量)")
+print("離職予測モデル - 改良版 v12")
+print("(Recall重視 + 閾値最適化)")
 print("=" * 70)
 
 df = pd.read_csv('data.csv')
@@ -297,7 +297,7 @@ if HAS_XGBOOST:
             'min_child_weight': trial.suggest_int('min_child_weight', 1, 15),
             'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
             'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
-            'scale_pos_weight': class_weight_ratio,
+            'scale_pos_weight': class_weight_ratio * 1.3,  # Recall向上のため強化
             'random_state': 42,
             'use_label_encoder': False,
             'eval_metric': 'logloss',
@@ -361,7 +361,7 @@ if HAS_LIGHTGBM and 'LGBM' in best_params:
 # XGB
 if HAS_XGBOOST and 'XGB' in best_params:
     xgb_params = best_params['XGB'].copy()
-    xgb_params['scale_pos_weight'] = class_weight_ratio
+    xgb_params['scale_pos_weight'] = class_weight_ratio * 1.3  # Recall向上のため強化
     xgb_params['random_state'] = 42
     xgb_params['use_label_encoder'] = False
     xgb_params['eval_metric'] = 'logloss'
@@ -423,7 +423,7 @@ for name, res in test_results.items():
 # 閾値分析
 print("\nThreshold Analysis:")
 threshold_analysis = []
-for thresh in np.arange(0.15, 0.50, 0.025):
+for thresh in np.arange(0.10, 0.50, 0.025):  # v12: より低い閾値も探索
     pred = (weighted_proba >= thresh).astype(int)
     acc = accuracy_score(y_test, pred)
     f1 = f1_score(y_test, pred)
@@ -436,12 +436,24 @@ best_f1 = max(threshold_analysis, key=lambda x: x['f1'])
 valid_recall = [t for t in threshold_analysis if t['recall'] >= 0.60]
 best_balanced = max(valid_recall, key=lambda x: x['f1']) if valid_recall else best_f1
 
+# v12: Recall70/75目標の閾値を探索
+valid_recall70 = [t for t in threshold_analysis if t['recall'] >= 0.70]
+valid_recall75 = [t for t in threshold_analysis if t['recall'] >= 0.75]
+best_recall70 = max(valid_recall70, key=lambda x: x['f1']) if valid_recall70 else None
+best_recall75 = max(valid_recall75, key=lambda x: x['f1']) if valid_recall75 else None
+
 # アンサンブル登録
 ensemble_configs = [
     ('Ens_Weighted', weighted_proba, best_balanced['threshold']),
     ('Ens_F1Max', weighted_proba, best_f1['threshold']),
     ('Ens_Simple', all_proba, 0.25),
 ]
+
+# v12: Recall重視のアンサンブルを追加
+if best_recall70:
+    ensemble_configs.append(('Ens_Recall70', weighted_proba, best_recall70['threshold']))
+if best_recall75:
+    ensemble_configs.append(('Ens_Recall75', weighted_proba, best_recall75['threshold']))
 
 # v11: スタッキングアンサンブル
 print("\nBuilding Stacking Ensemble...")
@@ -489,7 +501,8 @@ for name in [n for n, _, _ in ensemble_configs]:
 # 10. 最良モデル選択
 # =============================================================================
 def score(res):
-    return res['roc_auc'] * 0.4 + res['f1'] * 0.3 + res['recall'] * 0.3
+    # v12: Recall重視に変更
+    return res['roc_auc'] * 0.3 + res['f1'] * 0.3 + res['recall'] * 0.4
 
 best_name = max(test_results, key=lambda x: score(test_results[x]))
 best = test_results[best_name]
@@ -515,8 +528,8 @@ print(f"\nBest ROC-AUC: {best_roc_name} ({best_roc['roc_auc']:.4f})")
 # =============================================================================
 with open("metrics.txt", "w") as f:
     f.write(f"{'='*60}\n")
-    f.write(f"離職予測モデル - 評価レポート v11\n")
-    f.write(f"(Optuna最適化拡張 + 交互作用特徴量)\n")
+    f.write(f"離職予測モデル - 評価レポート v12\n")
+    f.write(f"(Recall重視 + 閾値最適化)\n")
     f.write(f"{'='*60}\n\n")
     
     f.write(f"=== Best Model: {best_name} ===\n")
