@@ -225,115 +225,167 @@ else:
     X_train_resampled, y_train_resampled = X_train_processed, y_train
 
 # =============================================================================
-# 6. Optuna最適化（拡張版）
+# 6. Optuna最適化 または 保存済みパラメータを使用
 # =============================================================================
-print("\n" + "=" * 70)
-print("Optuna Hyperparameter Optimization (ROC-AUC focus)")
-print("=" * 70)
+# 以下はOptuna最適化で得られた最良パラメータ（v11/v12）
+# 新たに最適化する場合は USE_SAVED_PARAMS = False に変更
+
+USE_SAVED_PARAMS = True  # True: 下記パラメータを使用, False: Optuna最適化を実行
+
+if USE_SAVED_PARAMS:
+    print("\n" + "=" * 70)
+    print("Using pre-optimized parameters (skip Optuna)")
+    print("=" * 70)
+    
+    best_params = {
+        'GB': {
+            'n_estimators': 559,
+            'max_depth': 8,
+            'learning_rate': 0.0134,
+            'subsample': 0.669,
+            'min_samples_split': 6,
+            'min_samples_leaf': 6,
+            'max_features': None,
+        },
+        'LGBM': {
+            'n_estimators': 368,
+            'max_depth': 7,
+            'learning_rate': 0.0184,
+            'subsample': 0.881,
+            'colsample_bytree': 0.534,
+            'min_child_samples': 50,
+            'reg_alpha': 0.772,
+            'reg_lambda': 0.199,
+        },
+        'XGB': {
+            'n_estimators': 434,
+            'max_depth': 10,
+            'learning_rate': 0.0115,
+            'subsample': 0.642,
+            'colsample_bytree': 0.916,
+            'min_child_weight': 3,
+            'reg_alpha': 0.356,
+            'reg_lambda': 0.525,
+        },
+        'CatBoost': {
+            'iterations': 642,
+            'depth': 7,
+            'learning_rate': 0.0522,
+            'l2_leaf_reg': 3.625,
+            'border_count': 213,
+        },
+    }
+    print("  Parameters loaded!")
+
+else:
+    print("\n" + "=" * 70)
+    print("Optuna Hyperparameter Optimization (ROC-AUC focus)")
+    print("=" * 70)
+    best_params = {}
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 N_TRIALS = 50  # 最適化のトライアル数
-best_params = {}
 
-# GradientBoosting最適化
-print("\nOptimizing GradientBoosting...")
-def objective_gb(trial):
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 200, 800),
-        'max_depth': trial.suggest_int('max_depth', 3, 8),
-        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
-        'subsample': trial.suggest_float('subsample', 0.6, 0.95),
-        'min_samples_split': trial.suggest_int('min_samples_split', 5, 30),
-        'min_samples_leaf': trial.suggest_int('min_samples_leaf', 2, 15),
-        'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
-        'random_state': 42
-    }
-    model = GradientBoostingClassifier(**params)
-    scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
-    return scores.mean()
-
-study_gb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
-study_gb.optimize(objective_gb, n_trials=N_TRIALS, show_progress_bar=False)
-best_params['GB'] = study_gb.best_params
-print(f"  Best ROC-AUC: {study_gb.best_value:.4f}")
-
-# LightGBM最適化
-if HAS_LIGHTGBM:
-    print("\nOptimizing LightGBM...")
-    def objective_lgbm(trial):
+if not USE_SAVED_PARAMS:
+    # GradientBoosting最適化
+    print("\nOptimizing GradientBoosting...")
+    def objective_gb(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 200, 800),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'max_depth': trial.suggest_int('max_depth', 3, 8),
             'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
             'subsample': trial.suggest_float('subsample', 0.6, 0.95),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
-            'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
-            'class_weight': 'balanced',
-            'random_state': 42,
-            'verbose': -1,
-            'n_jobs': -1
+            'min_samples_split': trial.suggest_int('min_samples_split', 5, 30),
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 2, 15),
+            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
+            'random_state': 42
         }
-        model = LGBMClassifier(**params)
+        model = GradientBoostingClassifier(**params)
         scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
         return scores.mean()
 
-    study_lgbm = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
-    study_lgbm.optimize(objective_lgbm, n_trials=N_TRIALS, show_progress_bar=False)
-    best_params['LGBM'] = study_lgbm.best_params
-    print(f"  Best ROC-AUC: {study_lgbm.best_value:.4f}")
+    study_gb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+    study_gb.optimize(objective_gb, n_trials=N_TRIALS, show_progress_bar=False)
+    best_params['GB'] = study_gb.best_params
+    print(f"  Best ROC-AUC: {study_gb.best_value:.4f}")
 
-# XGBoost最適化
-if HAS_XGBOOST:
-    print("\nOptimizing XGBoost...")
-    def objective_xgb(trial):
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 200, 800),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
-            'subsample': trial.suggest_float('subsample', 0.6, 0.95),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
-            'min_child_weight': trial.suggest_int('min_child_weight', 1, 15),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
-            'scale_pos_weight': class_weight_ratio * 1.3,  # Recall向上のため強化
-            'random_state': 42,
-            'use_label_encoder': False,
-            'eval_metric': 'logloss',
-            'n_jobs': -1
-        }
-        model = XGBClassifier(**params)
-        scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
-        return scores.mean()
+    # LightGBM最適化
+    if HAS_LIGHTGBM:
+        print("\nOptimizing LightGBM...")
+        def objective_lgbm(trial):
+            params = {
+                'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+                'max_depth': trial.suggest_int('max_depth', 3, 10),
+                'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+                'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
+                'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
+                'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+                'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+                'class_weight': 'balanced',
+                'random_state': 42,
+                'verbose': -1,
+                'n_jobs': -1
+            }
+            model = LGBMClassifier(**params)
+            scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+            return scores.mean()
 
-    study_xgb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
-    study_xgb.optimize(objective_xgb, n_trials=N_TRIALS, show_progress_bar=False)
-    best_params['XGB'] = study_xgb.best_params
-    print(f"  Best ROC-AUC: {study_xgb.best_value:.4f}")
+        study_lgbm = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+        study_lgbm.optimize(objective_lgbm, n_trials=N_TRIALS, show_progress_bar=False)
+        best_params['LGBM'] = study_lgbm.best_params
+        print(f"  Best ROC-AUC: {study_lgbm.best_value:.4f}")
 
-# CatBoost最適化
-if HAS_CATBOOST:
-    print("\nOptimizing CatBoost...")
-    def objective_cat(trial):
-        params = {
-            'iterations': trial.suggest_int('iterations', 200, 800),
-            'depth': trial.suggest_int('depth', 4, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
-            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
-            'border_count': trial.suggest_int('border_count', 32, 255),
-            'auto_class_weights': 'Balanced',
-            'random_seed': 42,
-            'verbose': False
-        }
-        model = CatBoostClassifier(**params)
-        scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
-        return scores.mean()
+    # XGBoost最適化
+    if HAS_XGBOOST:
+        print("\nOptimizing XGBoost...")
+        def objective_xgb(trial):
+            params = {
+                'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+                'max_depth': trial.suggest_int('max_depth', 3, 10),
+                'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+                'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.95),
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 15),
+                'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+                'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+                'scale_pos_weight': class_weight_ratio * 1.3,  # Recall向上のため強化
+                'random_state': 42,
+                'use_label_encoder': False,
+                'eval_metric': 'logloss',
+                'n_jobs': -1
+            }
+            model = XGBClassifier(**params)
+            scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+            return scores.mean()
 
-    study_cat = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
-    study_cat.optimize(objective_cat, n_trials=N_TRIALS, show_progress_bar=False)
-    best_params['CatBoost'] = study_cat.best_params
-    print(f"  Best ROC-AUC: {study_cat.best_value:.4f}")
+        study_xgb = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+        study_xgb.optimize(objective_xgb, n_trials=N_TRIALS, show_progress_bar=False)
+        best_params['XGB'] = study_xgb.best_params
+        print(f"  Best ROC-AUC: {study_xgb.best_value:.4f}")
+
+    # CatBoost最適化
+    if HAS_CATBOOST:
+        print("\nOptimizing CatBoost...")
+        def objective_cat(trial):
+            params = {
+                'iterations': trial.suggest_int('iterations', 200, 800),
+                'depth': trial.suggest_int('depth', 4, 10),
+                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
+                'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
+                'border_count': trial.suggest_int('border_count', 32, 255),
+                'auto_class_weights': 'Balanced',
+                'random_seed': 42,
+                'verbose': False
+            }
+            model = CatBoostClassifier(**params)
+            scores = cross_val_score(model, X_train_resampled, y_train_resampled, cv=cv, scoring='roc_auc', n_jobs=-1)
+            return scores.mean()
+
+        study_cat = optuna.create_study(direction='maximize', sampler=TPESampler(seed=42))
+        study_cat.optimize(objective_cat, n_trials=N_TRIALS, show_progress_bar=False)
+        best_params['CatBoost'] = study_cat.best_params
+        print(f"  Best ROC-AUC: {study_cat.best_value:.4f}")
 
 # =============================================================================
 # 7. 最適化されたモデルの学習
